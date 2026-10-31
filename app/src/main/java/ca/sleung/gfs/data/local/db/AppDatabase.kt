@@ -15,10 +15,12 @@ import ca.sleung.gfs.data.local.db.entity.TransactionEntity
  * - v2: Added `tag` & `tagColor` columns on `transactions` and created `tags` table.
  * - v3: Added query performance indices on `transactions(timestamp)`, `transactions(cycleKey)`,
  *       and `tags(orderIndex)`.
+ * - v4: Migrated `transactions.amount` from REAL (Double) to INTEGER (cents) to eliminate
+ *       IEEE-754 precision issues at the database layer.
  */
 @Database(
     entities = [TransactionEntity::class, TagEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {

@@ -20,7 +20,8 @@ data class BackupPreferences(
     val currentRolloverAmount: Double,
     val hasCompletedOnboarding: Boolean,
     val lastProcessedCycleKey: String,
-    val firstCycleKey: String = ""
+    val firstCycleKey: String = "",
+    val hideDecimalPlaces: Boolean = true
 )
 
 @Serializable

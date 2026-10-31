@@ -63,7 +63,7 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v5
         with:
-          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY || 'XnEe5S7f9kMeOEh5iZenrQ==' }}
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
 
       - name: Decode Release Keystore
         id: keystore
@@ -89,7 +89,7 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           VERSION_NAME: ${{ steps.semver.outputs.version_name }}
-        run: ./gradlew assembleRelease -PversionName="$VERSION_NAME"
+        run: ./gradlew assembleRelease --no-configuration-cache -PversionName="$VERSION_NAME"
 
       - name: Verify Signature & Prepare Release Assets
         id: assets

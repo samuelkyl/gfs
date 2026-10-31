@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
@@ -48,6 +49,8 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -85,8 +88,8 @@ import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ca.sleung.gfs.BuildConfig
 import ca.sleung.gfs.R
-import ca.sleung.gfs.data.local.db.entity.TagEntity
 import ca.sleung.gfs.data.repository.BudgetRepository
+import ca.sleung.gfs.domain.model.Tag
 import ca.sleung.gfs.ui.theme.GFSTheme
 import ca.sleung.gfs.ui.theme.GFSThemeDefaults
 import ca.sleung.gfs.ui.theme.TABULAR_FIGURES_FEATURE
@@ -131,8 +134,6 @@ fun SettingsScreen(
     val exportFailedMsg = stringResource(R.string.snackbar_backup_export_failed)
     val chooserTitle = stringResource(R.string.settings_share_backup_chooser)
 
-    var pendingImportJson by rememberSaveable { mutableStateOf<String?>(null) }
-
     // SAF OpenDocument file picker reading off the Main thread
     val importFilePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -165,7 +166,7 @@ fun SettingsScreen(
                         if (content == null) {
                             snackbarHostState.showSnackbar(tooLargeMsg)
                         } else {
-                            pendingImportJson = content
+                            viewModel.stageImportBackup(content)
                         }
                     },
                     onFailure = {
@@ -190,6 +191,7 @@ fun SettingsScreen(
         onResetExtraSaved = viewModel::resetExtraSaved,
         onAddTag = viewModel::addTag,
         onDeleteTag = viewModel::deleteTag,
+        onToggleHideDecimals = viewModel::setHideDecimalPlaces,
         onExportBackup = {
             coroutineScope.launch {
                 runCatching {
@@ -208,18 +210,14 @@ fun SettingsScreen(
         modifier = modifier
     )
 
-    pendingImportJson?.let { jsonToRestore ->
+    if (uiState.hasPendingImport) {
         AlertDialog(
-            onDismissRequest = { pendingImportJson = null },
+            onDismissRequest = { viewModel.cancelImportBackup() },
             title = { Text(stringResource(R.string.dialog_import_confirm_title)) },
             text = { Text(stringResource(R.string.dialog_import_confirm_body)) },
             confirmButton = {
                 TextButton(
-                    onClick = {
-                        val payload = jsonToRestore
-                        pendingImportJson = null
-                        viewModel.importBackup(payload)
-                    }
+                    onClick = { viewModel.confirmImportBackup() }
                 ) {
                     Text(
                         text = stringResource(R.string.dialog_import_confirm_action),
@@ -229,7 +227,7 @@ fun SettingsScreen(
                 }
             },
             dismissButton = {
-                TextButton(onClick = { pendingImportJson = null }) {
+                TextButton(onClick = { viewModel.cancelImportBackup() }) {
                     Text(stringResource(R.string.action_cancel))
                 }
             }
@@ -274,6 +272,7 @@ fun SettingsContent(
     onResetExtraSaved: () -> Unit,
     onAddTag: (name: String, colorHex: String) -> Unit,
     onDeleteTag: (id: Long) -> Unit,
+    onToggleHideDecimals: (Boolean) -> Unit,
     onExportBackup: () -> Unit,
     onRequestImportBackup: () -> Unit,
     onSaveSettings: (monthlyBudget: Double, refillDay: Int, maxCap: Double) -> Unit,
@@ -288,6 +287,7 @@ fun SettingsContent(
     var syncedRestoreGen by rememberSaveable { mutableIntStateOf(-1) }
 
     var showResetDialog by rememberSaveable { mutableStateOf(false) }
+    var tagPendingDelete by remember { mutableStateOf<Tag?>(null) }
     var newTagName by rememberSaveable { mutableStateOf("") }
     var selectedColorHex by rememberSaveable { mutableStateOf(COLOR_PALETTE[0].hex) }
 
@@ -305,9 +305,9 @@ fun SettingsContent(
         }
     }
 
-    val parsedMonthly = monthlyInput.toDoubleOrNull()
+    val parsedMonthly = CurrencyFormatter.parseAmount(monthlyInput)
     val parsedDay = refillDayInput.toIntOrNull()
-    val parsedCap = maxCapInput.toDoubleOrNull()
+    val parsedCap = CurrencyFormatter.parseAmount(maxCapInput)
 
     val isMonthlyError = syncedRestoreGen >= 0 && (parsedMonthly == null || parsedMonthly <= 0.0)
     val isDayError = syncedRestoreGen >= 0 && (parsedDay == null || parsedDay !in 1..31)
@@ -388,7 +388,10 @@ fun SettingsContent(
                     ) {
                         StatTile(
                             label = stringResource(R.string.settings_tile_monthly),
-                            value = CurrencyFormatter.formatCurrency(uiState.monthlyBudget),
+                            value = CurrencyFormatter.formatCurrency(
+                                uiState.monthlyBudget,
+                                hideDecimals = uiState.hideDecimalPlaces
+                            ),
                             modifier = Modifier.weight(1f)
                         )
                         val rolloverColor = if (uiState.currentRollover < 0.0) {
@@ -401,14 +404,18 @@ fun SettingsContent(
                             label = stringResource(R.string.settings_tile_rollover),
                             value = CurrencyFormatter.formatCurrency(
                                 uiState.currentRollover,
-                                showPlusSign = true
+                                showPlusSign = true,
+                                hideDecimals = uiState.hideDecimalPlaces
                             ),
                             valueColor = rolloverColor,
                             modifier = Modifier.weight(1f)
                         )
                         StatTile(
                             label = stringResource(R.string.settings_tile_extra_saved),
-                            value = CurrencyFormatter.formatCurrency(uiState.totalExtraSaved),
+                            value = CurrencyFormatter.formatCurrency(
+                                uiState.totalExtraSaved,
+                                hideDecimals = uiState.hideDecimalPlaces
+                            ),
                             valueColor = extendedColors.savedAccent,
                             modifier = Modifier.weight(1f)
                         )
@@ -460,7 +467,7 @@ fun SettingsContent(
                                 val tagColor = parseHexColor(tagItem.colorHex)
                                 InputChip(
                                     selected = false,
-                                    onClick = { onDeleteTag(tagItem.id) },
+                                    onClick = { tagPendingDelete = tagItem },
                                     label = {
                                         Text(
                                             text = tagItem.name,
@@ -707,14 +714,14 @@ fun SettingsContent(
                         value = monthlyInput,
                         onValueChange = { next ->
                             val sanitized = CurrencyFormatter.sanitizeAmountInput(next) ?: return@OutlinedTextField
-                            val prevMonthly = monthlyInput.toDoubleOrNull()
-                            val prevCap = maxCapInput.toDoubleOrNull()
+                            val prevMonthly = CurrencyFormatter.parseAmount(monthlyInput)
+                            val prevCap = CurrencyFormatter.parseAmount(maxCapInput)
                             val wasTrackingDefault2x = prevMonthly != null &&
                                 prevCap != null &&
                                 abs(prevCap - prevMonthly * 2.0) < 0.01
 
                             monthlyInput = sanitized
-                            val nextNum = sanitized.toDoubleOrNull()
+                            val nextNum = CurrencyFormatter.parseAmount(sanitized)
                             if (wasTrackingDefault2x && nextNum != null && nextNum > 0.0 && nextNum * 2.0 <= CurrencyFormatter.MAX_INPUT_AMOUNT) {
                                 maxCapInput = CurrencyFormatter.formatEditableAmount(nextNum * 2.0)
                             }
@@ -797,6 +804,48 @@ fun SettingsContent(
                         )
                     )
 
+                    // Hide decimal places toggle (on by default)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+                            .toggleable(
+                                value = uiState.hideDecimalPlaces,
+                                role = Role.Switch,
+                                onValueChange = onToggleHideDecimals
+                            )
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 12.dp)
+                        ) {
+                            Text(
+                                text = stringResource(R.string.settings_hide_decimals_label),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = stringResource(R.string.settings_hide_decimals_desc),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+                        Switch(
+                            checked = uiState.hideDecimalPlaces,
+                            onCheckedChange = null,
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = extendedColors.positiveAccent
+                            )
+                        )
+                    }
+
                     Spacer(modifier = Modifier.height(4.dp))
 
                     Button(
@@ -870,6 +919,34 @@ fun SettingsContent(
                 }
             )
         }
+
+        // Confirmation Dialog for Tag Deletion
+        tagPendingDelete?.let { tag ->
+            AlertDialog(
+                onDismissRequest = { tagPendingDelete = null },
+                title = { Text(stringResource(R.string.dialog_delete_tag_title)) },
+                text = { Text(stringResource(R.string.dialog_delete_tag_body, tag.name)) },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            onDeleteTag(tag.id)
+                            tagPendingDelete = null
+                        }
+                    ) {
+                        Text(
+                            text = stringResource(R.string.dialog_delete_tag_action),
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { tagPendingDelete = null }) {
+                        Text(stringResource(R.string.action_cancel))
+                    }
+                }
+            )
+        }
     }
 }
 
@@ -921,9 +998,9 @@ private fun SettingsScreenPreview() {
                 currentRollover = 180.0,
                 totalExtraSaved = 340.0,
                 tags = listOf(
-                    TagEntity(1, "Eating Out", "#FF7043", 0),
-                    TagEntity(2, "Shopping", "#AB47BC", 1),
-                    TagEntity(3, "Coffee & Drinks", "#26A69A", 2)
+                    Tag(1, "Eating Out", "#FF7043", 0),
+                    Tag(2, "Shopping", "#AB47BC", 1),
+                    Tag(3, "Coffee & Drinks", "#26A69A", 2)
                 ),
                 transactionCount = 24
             ),
@@ -932,6 +1009,7 @@ private fun SettingsScreenPreview() {
             onResetExtraSaved = {},
             onAddTag = { _, _ -> },
             onDeleteTag = {},
+            onToggleHideDecimals = {},
             onExportBackup = {},
             onRequestImportBackup = {},
             onSaveSettings = { _, _, _ -> }

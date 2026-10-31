@@ -48,7 +48,8 @@ import kotlin.math.roundToInt
 fun CategoryPieChart(
     breakdown: List<CategoryBreakdown>,
     totalSpent: Double,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    hideDecimals: Boolean = false
 ) {
     val animatedProgress = remember { Animatable(0f) }
 
@@ -60,8 +61,8 @@ fun CategoryPieChart(
         )
     }
 
-    val formattedTotal = remember(totalSpent) {
-        CurrencyFormatter.formatCurrency(totalSpent)
+    val formattedTotal = remember(totalSpent, hideDecimals) {
+        CurrencyFormatter.formatCurrency(totalSpent, hideDecimals = hideDecimals)
     }
     val chartA11y = pluralStringResource(
         R.plurals.breakdown_chart_a11y,
@@ -208,7 +209,7 @@ fun CategoryPieChart(
                             }
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text(
-                                    text = CurrencyFormatter.formatCurrency(item.totalAmount),
+                                    text = CurrencyFormatter.formatCurrency(item.totalAmount, hideDecimals = hideDecimals),
                                     style = MaterialTheme.typography.bodySmall.copy(
                                         fontFeatureSettings = TABULAR_FIGURES_FEATURE
                                     ),

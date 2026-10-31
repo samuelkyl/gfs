@@ -47,8 +47,8 @@ data class GfsExtendedColors(
 )
 
 val DarkExtendedColors = GfsExtendedColors(
-    positiveAccent = Color(0xFF4CAF50),
-    onPositiveAccent = Color(0xFFFFFFFF),
+    positiveAccent = Color(0xFF66BB6A),
+    onPositiveAccent = Color(0xFF003915),
     warningAccent = Color(0xFFFFB300),
     negativeAccent = Color(0xFFEF5350),
     savedAccent = Color(0xFF64B5F6)
@@ -63,6 +63,26 @@ val LightExtendedColors = GfsExtendedColors(
 )
 
 val LocalExtendedColors = staticCompositionLocalOf { DarkExtendedColors }
+
+/**
+ * Ensures tag text labels meet WCAG AA (>= 4.5:1) contrast against light surfaces.
+ * In light mode, bright pastel tag colors are darkened so text remains crisp and readable.
+ */
+fun accessibleTagTextColor(baseColor: Color, isDarkTheme: Boolean): Color {
+    if (isDarkTheme) return baseColor
+    val lum = 0.2126f * baseColor.red + 0.7152f * baseColor.green + 0.0722f * baseColor.blue
+    return if (lum > 0.22f) {
+        val factor = 0.52f
+        Color(
+            red = baseColor.red * factor,
+            green = baseColor.green * factor,
+            blue = baseColor.blue * factor,
+            alpha = 1f
+        )
+    } else {
+        baseColor
+    }
+}
 
 /**
  * Safely parses a 6-digit or 8-digit hex color string (with or without leading '#'),

@@ -20,14 +20,29 @@ class SettingsViewModel @Inject constructor(
 
     private val _statusMessage = MutableStateFlow<String?>(null)
     private val _restoreGeneration = MutableStateFlow(0)
+    private val _hasPendingImport = MutableStateFlow(false)
+    private var stagedBackupJson: String? = null
+
+    private data class LocalSettingsSnapshot(
+        val statusMessage: String?,
+        val restoreGeneration: Int,
+        val hasPendingImport: Boolean
+    )
+
+    private val _localSnapshotFlow = combine(
+        _statusMessage,
+        _restoreGeneration,
+        _hasPendingImport
+    ) { status, restoreGen, hasPending ->
+        LocalSettingsSnapshot(status, restoreGen, hasPending)
+    }
 
     val uiState: StateFlow<SettingsUiState> = combine(
         budgetRepository.budgetInfoFlow,
         budgetRepository.tagsFlow,
         budgetRepository.allTransactionsFlow,
-        _statusMessage,
-        _restoreGeneration
-    ) { budgetInfo, tags, allTx, status, restoreGen ->
+        _localSnapshotFlow
+    ) { budgetInfo, tags, allTx, local ->
         SettingsUiState(
             monthlyBudget = budgetInfo.monthlyBudget,
             refillDayOfMonth = budgetInfo.refillDayOfMonth,
@@ -36,9 +51,11 @@ class SettingsViewModel @Inject constructor(
             totalExtraSaved = budgetInfo.totalExtraSaved,
             tags = tags,
             transactionCount = allTx.size,
-            statusMessage = status,
-            restoreGeneration = restoreGen,
-            isLoading = false
+            statusMessage = local.statusMessage,
+            restoreGeneration = local.restoreGeneration,
+            isLoading = false,
+            hideDecimalPlaces = budgetInfo.hideDecimalPlaces,
+            hasPendingImport = local.hasPendingImport
         )
     }.stateIn(
         scope = viewModelScope,
@@ -102,6 +119,31 @@ class SettingsViewModel @Inject constructor(
             } else {
                 _statusMessage.value = "Failed to import backup: invalid file format"
             }
+        }
+    }
+
+    fun setHideDecimalPlaces(hide: Boolean) {
+        viewModelScope.launch {
+            budgetRepository.updateHideDecimalPlaces(hide)
+        }
+    }
+
+    fun stageImportBackup(jsonString: String) {
+        stagedBackupJson = jsonString
+        _hasPendingImport.value = true
+    }
+
+    fun cancelImportBackup() {
+        stagedBackupJson = null
+        _hasPendingImport.value = false
+    }
+
+    fun confirmImportBackup() {
+        val payload = stagedBackupJson
+        stagedBackupJson = null
+        _hasPendingImport.value = false
+        if (payload != null) {
+            importBackup(payload)
         }
     }
 

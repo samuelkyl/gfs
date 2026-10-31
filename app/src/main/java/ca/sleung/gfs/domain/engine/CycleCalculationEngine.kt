@@ -9,7 +9,6 @@ import java.time.temporal.ChronoUnit
 import java.util.Locale
 import javax.inject.Inject
 import javax.inject.Singleton
-import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -22,31 +21,39 @@ data class CycleDates(
 )
 
 data class RolloverResult(
-    val rolloverAmount: Double,
-    val overflowAmount: Double,
-    val newTotalExtraSaved: Double
-)
+    val rolloverAmountCents: Long,
+    val overflowAmountCents: Long,
+    val newTotalExtraSavedCents: Long
+) {
+    val rolloverAmount: Double get() = rolloverAmountCents / 100.0
+    val overflowAmount: Double get() = overflowAmountCents / 100.0
+    val newTotalExtraSaved: Double get() = newTotalExtraSavedCents / 100.0
+}
 
 data class CycleRolloverResolution(
-    val rolloverAmount: Double,
-    val overflowAmount: Double,
-    val newTotalExtraSaved: Double,
+    val rolloverAmountCents: Long,
+    val overflowAmountCents: Long,
+    val newTotalExtraSavedCents: Long,
     val processedCycleKey: String,
     val firstCycleKey: String,
     val shouldPersist: Boolean
-)
+) {
+    val rolloverAmount: Double get() = rolloverAmountCents / 100.0
+    val overflowAmount: Double get() = overflowAmountCents / 100.0
+    val newTotalExtraSaved: Double get() = newTotalExtraSavedCents / 100.0
+}
 
 /**
  * Pure domain engine responsible for billing cycle boundary math, short-month clamping,
  * surplus rollover capping, extra-saved overflow tracking, and deficit carryover.
+ * All monetary calculations operate strictly on integer cents (Long) to eliminate floating-point drift.
  */
 @Singleton
 class CycleCalculationEngine @Inject constructor() {
 
     companion object {
         /**
-         * Rounds a finite monetary [Double] to 2 decimal places (cents) using half-up rounding
-         * to prevent IEEE-754 floating-point drift across repeated additions/subtractions.
+         * Rounds a finite monetary [Double] to 2 decimal places (cents) using half-up rounding.
          */
         fun roundToCents(value: Double): Double {
             if (!value.isFinite()) return 0.0
@@ -54,6 +61,11 @@ class CycleCalculationEngine @Inject constructor() {
                 .setScale(2, RoundingMode.HALF_UP)
                 .toDouble()
             return if (rounded == -0.0) 0.0 else rounded
+        }
+
+        fun toCents(amount: Double): Long {
+            if (!amount.isFinite()) return 0L
+            return Math.round(amount * 100.0)
         }
     }
 
@@ -101,72 +113,73 @@ class CycleCalculationEngine @Inject constructor() {
     }
 
     /**
-     * Calculates rollover, overflow, and accumulated extra saved based on previous balance and max cap.
-     * - Surplus above [maxRolloverCap] is tracked in [RolloverResult.newTotalExtraSaved].
+     * Calculates rollover, overflow, and accumulated extra saved based on previous balance and max cap in cents.
+     * - Surplus above [maxRolloverCapCents] is tracked in [RolloverResult.newTotalExtraSavedCents].
      * - Deficit (`< 0`) carries over directly into the next cycle, reducing available budget.
      */
-    fun computeRollover(
-        previousRemainingBalance: Double,
-        maxRolloverCap: Double,
-        currentExtraSaved: Double
+    fun computeRolloverCents(
+        previousRemainingBalanceCents: Long,
+        maxRolloverCapCents: Long,
+        currentExtraSavedCents: Long
     ): RolloverResult {
-        val cleanBalance = roundToCents(previousRemainingBalance)
-        val cleanCap = roundToCents(max(0.0, maxRolloverCap))
-        val cleanExtra = roundToCents(currentExtraSaved)
+        val cleanCap = max(0L, maxRolloverCapCents)
 
         return when {
-            cleanBalance > 0.0 -> {
-                val allowableRollover = roundToCents(min(cleanBalance, cleanCap))
-                val overflow = roundToCents(cleanBalance - allowableRollover)
+            previousRemainingBalanceCents > 0L -> {
+                val allowableRollover = min(previousRemainingBalanceCents, cleanCap)
+                val overflow = previousRemainingBalanceCents - allowableRollover
                 RolloverResult(
-                    rolloverAmount = allowableRollover,
-                    overflowAmount = overflow,
-                    newTotalExtraSaved = roundToCents(cleanExtra + overflow)
+                    rolloverAmountCents = allowableRollover,
+                    overflowAmountCents = overflow,
+                    newTotalExtraSavedCents = currentExtraSavedCents + overflow
                 )
             }
-            cleanBalance < 0.0 -> {
+            previousRemainingBalanceCents < 0L -> {
                 RolloverResult(
-                    rolloverAmount = cleanBalance,
-                    overflowAmount = 0.0,
-                    newTotalExtraSaved = cleanExtra
+                    rolloverAmountCents = previousRemainingBalanceCents,
+                    overflowAmountCents = 0L,
+                    newTotalExtraSavedCents = currentExtraSavedCents
                 )
             }
             else -> {
                 RolloverResult(
-                    rolloverAmount = 0.0,
-                    overflowAmount = 0.0,
-                    newTotalExtraSaved = cleanExtra
+                    rolloverAmountCents = 0L,
+                    overflowAmountCents = 0L,
+                    newTotalExtraSavedCents = currentExtraSavedCents
                 )
             }
         }
     }
 
+    fun computeRollover(
+        previousRemainingBalance: Double,
+        maxRolloverCap: Double,
+        currentExtraSaved: Double
+    ): RolloverResult = computeRolloverCents(
+        previousRemainingBalanceCents = toCents(previousRemainingBalance),
+        maxRolloverCapCents = toCents(maxRolloverCap),
+        currentExtraSavedCents = toCents(currentExtraSaved)
+    )
+
     /**
      * Resolves the rollover and extra saved amounts for [currentCycleKey] by stepping through
-     * all completed cycles prior to [currentCycleKey].
-     *
-     * Handles:
-     * - Negative balances (deficits) carrying over into the new cycle and reducing available budget.
-     * - Positive balances rolling over up to [maxRolloverCap], with surplus added to extra saved.
-     * - Multi-month gaps where one or more cycles elapsed without opening the app.
-     * - Retroactive edits/deletions of past-cycle transactions.
-     * - Existing installations upgrading where prior cycle transitions were not yet persisted.
+     * all completed cycles prior to [currentCycleKey] using integer cent calculations.
      */
-    fun resolveCycleRollover(
+    fun resolveCycleRolloverCents(
         currentCycleKey: String,
         lastProcessedCycleKey: String,
         firstCycleKey: String = "",
-        currentRolloverAmount: Double,
-        currentExtraSaved: Double,
-        monthlyRefillAmount: Double,
-        maxRolloverCap: Double,
-        spentByCycle: Map<String, Double>
+        currentRolloverCents: Long,
+        currentExtraSavedCents: Long,
+        monthlyRefillCents: Long,
+        maxRolloverCapCents: Long,
+        spentByCycleCents: Map<String, Long>
     ): CycleRolloverResolution {
         val currentMonth = parseYearMonth(currentCycleKey)
             ?: return CycleRolloverResolution(
-                rolloverAmount = roundToCents(currentRolloverAmount),
-                overflowAmount = 0.0,
-                newTotalExtraSaved = roundToCents(currentExtraSaved),
+                rolloverAmountCents = currentRolloverCents,
+                overflowAmountCents = 0L,
+                newTotalExtraSavedCents = currentExtraSavedCents,
                 processedCycleKey = lastProcessedCycleKey,
                 firstCycleKey = firstCycleKey,
                 shouldPersist = false
@@ -174,7 +187,7 @@ class CycleCalculationEngine @Inject constructor() {
 
         val lastProcessedMonth = parseYearMonth(lastProcessedCycleKey)
         val recordedFirstMonth = parseYearMonth(firstCycleKey)
-        val earliestTxMonth = spentByCycle.keys.mapNotNull { parseYearMonth(it) }.minOrNull()
+        val earliestTxMonth = spentByCycleCents.keys.mapNotNull { parseYearMonth(it) }.minOrNull()
 
         val anchorFirstMonth = listOfNotNull(
             recordedFirstMonth ?: earliestTxMonth,
@@ -193,9 +206,9 @@ class CycleCalculationEngine @Inject constructor() {
             val shouldPersist = currentCycleKey != lastProcessedCycleKey ||
                 resolvedFirstCycleKey != firstCycleKey
             return CycleRolloverResolution(
-                rolloverAmount = roundToCents(currentRolloverAmount),
-                overflowAmount = 0.0,
-                newTotalExtraSaved = roundToCents(currentExtraSaved),
+                rolloverAmountCents = currentRolloverCents,
+                overflowAmountCents = 0L,
+                newTotalExtraSavedCents = currentExtraSavedCents,
                 processedCycleKey = currentCycleKey,
                 firstCycleKey = resolvedFirstCycleKey,
                 shouldPersist = shouldPersist
@@ -209,39 +222,39 @@ class CycleCalculationEngine @Inject constructor() {
             (earliestTxMonth == null || !earliestTxMonth.isBefore(lastProcessedMonth)) &&
             lastProcessedMonth.isBefore(currentMonth)
         ) {
-            roundToCents(currentRolloverAmount)
+            currentRolloverCents
         } else {
-            0.0
+            0L
         }
 
         val overflowStartMonth = when {
             lastProcessedMonth != null && lastProcessedMonth.isBefore(currentMonth) -> lastProcessedMonth
-            firstCycleKey.isBlank() && currentRolloverAmount == 0.0 && currentExtraSaved == 0.0 -> effectiveFirstMonth
+            firstCycleKey.isBlank() && currentRolloverCents == 0L && currentExtraSavedCents == 0L -> effectiveFirstMonth
             else -> currentMonth
         }
 
         var rollover = baselineRollover
-        var extraSaved = roundToCents(currentExtraSaved)
-        var totalOverflow = 0.0
+        var extraSaved = currentExtraSavedCents
+        var totalOverflow = 0L
         var month = effectiveFirstMonth
 
         while (month.isBefore(currentMonth)) {
             val key = month.toString()
-            val spentInCycle = roundToCents(spentByCycle[key] ?: 0.0)
-            val cycleBudget = roundToCents(monthlyRefillAmount + rollover)
-            val remainingBalance = roundToCents(cycleBudget - spentInCycle)
+            val spentInCycle = spentByCycleCents[key] ?: 0L
+            val cycleBudget = monthlyRefillCents + rollover
+            val remainingBalance = cycleBudget - spentInCycle
 
             val countOverflow = !month.isBefore(overflowStartMonth)
-            val stepResult = computeRollover(
-                previousRemainingBalance = remainingBalance,
-                maxRolloverCap = maxRolloverCap,
-                currentExtraSaved = extraSaved
+            val stepResult = computeRolloverCents(
+                previousRemainingBalanceCents = remainingBalance,
+                maxRolloverCapCents = maxRolloverCapCents,
+                currentExtraSavedCents = extraSaved
             )
 
-            rollover = stepResult.rolloverAmount
+            rollover = stepResult.rolloverAmountCents
             if (countOverflow) {
-                totalOverflow = roundToCents(totalOverflow + stepResult.overflowAmount)
-                extraSaved = stepResult.newTotalExtraSaved
+                totalOverflow += stepResult.overflowAmountCents
+                extraSaved = stepResult.newTotalExtraSavedCents
             }
 
             month = month.plusMonths(1)
@@ -249,16 +262,39 @@ class CycleCalculationEngine @Inject constructor() {
 
         val shouldPersist = currentCycleKey != lastProcessedCycleKey ||
             resolvedFirstCycleKey != firstCycleKey ||
-            abs(rollover - currentRolloverAmount) > 0.0001 ||
-            abs(extraSaved - currentExtraSaved) > 0.0001
+            rollover != currentRolloverCents ||
+            extraSaved != currentExtraSavedCents
 
         return CycleRolloverResolution(
-            rolloverAmount = rollover,
-            overflowAmount = totalOverflow,
-            newTotalExtraSaved = extraSaved,
+            rolloverAmountCents = rollover,
+            overflowAmountCents = totalOverflow,
+            newTotalExtraSavedCents = extraSaved,
             processedCycleKey = currentCycleKey,
             firstCycleKey = resolvedFirstCycleKey,
             shouldPersist = shouldPersist
+        )
+    }
+
+    fun resolveCycleRollover(
+        currentCycleKey: String,
+        lastProcessedCycleKey: String,
+        firstCycleKey: String = "",
+        currentRolloverAmount: Double,
+        currentExtraSaved: Double,
+        monthlyRefillAmount: Double,
+        maxRolloverCap: Double,
+        spentByCycle: Map<String, Double>
+    ): CycleRolloverResolution {
+        val spentByCycleCents = spentByCycle.mapValues { toCents(it.value) }
+        return resolveCycleRolloverCents(
+            currentCycleKey = currentCycleKey,
+            lastProcessedCycleKey = lastProcessedCycleKey,
+            firstCycleKey = firstCycleKey,
+            currentRolloverCents = toCents(currentRolloverAmount),
+            currentExtraSavedCents = toCents(currentExtraSaved),
+            monthlyRefillCents = toCents(monthlyRefillAmount),
+            maxRolloverCapCents = toCents(maxRolloverCap),
+            spentByCycleCents = spentByCycleCents
         )
     }
 

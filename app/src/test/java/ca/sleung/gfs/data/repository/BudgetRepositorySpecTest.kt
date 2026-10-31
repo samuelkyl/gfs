@@ -136,6 +136,7 @@ class BudgetRepositorySpecTest {
 
         // Roll over to Month 4 (2026-12): $1300 remaining from 2026-11 exceeds $1000 cap by $300
         currentDate = LocalDate.of(2026, 12, 1)
+        repository.reconcileRollover()
         val decInfo = repository.budgetInfoFlow.first()
 
         assertEquals("2026-12", decInfo.cycleKey)
@@ -168,6 +169,7 @@ class BudgetRepositorySpecTest {
 
         // Advance to October 2026: -$140 deficit must be deducted from October's $500 refill
         currentDate = LocalDate.of(2026, 10, 1)
+        repository.reconcileRollover()
         val octInfo = repository.budgetInfoFlow.first()
 
         assertEquals("2026-10", octInfo.cycleKey)

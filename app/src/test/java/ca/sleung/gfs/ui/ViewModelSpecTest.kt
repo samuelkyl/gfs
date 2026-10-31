@@ -213,9 +213,26 @@ class ViewModelSpecTest {
 
         val genBefore = vm.uiState.value.restoreGeneration
         val exported = vm.getExportJson()
-        vm.importBackup(exported)
+        
+        // Stage, cancel, and confirm import
+        vm.stageImportBackup(exported)
+        assertTrue(vm.uiState.value.hasPendingImport)
+        vm.cancelImportBackup()
+        assertFalse(vm.uiState.value.hasPendingImport)
+
+        vm.stageImportBackup(exported)
+        assertTrue(vm.uiState.value.hasPendingImport)
+        vm.confirmImportBackup()
+        assertFalse(vm.uiState.value.hasPendingImport)
         assertTrue(vm.uiState.value.statusMessage?.contains("Restored") == true)
         assertEquals(genBefore + 1, vm.uiState.value.restoreGeneration)
+
+        // Hide decimal places toggle
+        assertTrue(vm.uiState.value.hideDecimalPlaces)
+        vm.setHideDecimalPlaces(false)
+        assertFalse(vm.uiState.value.hideDecimalPlaces)
+        vm.setHideDecimalPlaces(true)
+        assertTrue(vm.uiState.value.hideDecimalPlaces)
 
         vm.importBackup("invalid json")
         assertEquals("Failed to import backup: invalid file format", vm.uiState.value.statusMessage)

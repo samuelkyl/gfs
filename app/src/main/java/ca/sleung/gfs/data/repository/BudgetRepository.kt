@@ -15,16 +15,23 @@ import ca.sleung.gfs.domain.model.BackupTag
 import ca.sleung.gfs.domain.model.BackupTransaction
 import ca.sleung.gfs.domain.model.BudgetInfo
 import ca.sleung.gfs.domain.model.CategoryBreakdown
+import ca.sleung.gfs.domain.model.CycleHistory
 import ca.sleung.gfs.domain.model.GfsBackupData
 import ca.sleung.gfs.domain.model.ImportResult
+import ca.sleung.gfs.domain.model.Tag
+import ca.sleung.gfs.domain.model.Transaction
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -38,20 +45,22 @@ import javax.inject.Singleton
 import kotlin.math.abs
 
 /**
- * Single source of truth coordinating Room transactions/tags, DataStore budget preferences,
- * and [CycleCalculationEngine] domain calculations.
+ * Single source of truth coordinating Room DB, DataStore preferences, and cycle calculations.
+ * Exposes clean domain models ([Transaction], [Tag], [BudgetInfo], [CycleHistory]) to the UI layer,
+ * keeping the presentation layer completely decoupled from Room entities.
  */
 @Singleton
-class BudgetRepository(
+class BudgetRepository internal constructor(
     private val transactionDao: TransactionDao,
     private val tagDao: TagDao,
     private val preferencesRepository: BudgetPreferencesRepository,
     private val cycleEngine: CycleCalculationEngine,
     private val ioDispatcher: CoroutineDispatcher,
-    private val defaultDispatcher: CoroutineDispatcher = ioDispatcher,
+    private val defaultDispatcher: CoroutineDispatcher,
     private val transactionRunner: DatabaseTransactionRunner = DatabaseTransactionRunner { it() },
     private val currentDateProvider: () -> LocalDate = { LocalDate.now() }
 ) {
+
     @Inject
     constructor(
         transactionDao: TransactionDao,
@@ -89,6 +98,7 @@ class BudgetRepository(
         private val importJsonFormat = Json { ignoreUnknownKeys = true }
     }
 
+    private val appScope = CoroutineScope(SupervisorJob() + ioDispatcher)
     private val dateRefreshTrigger = MutableStateFlow(0L)
     private val rolloverPersistMutex = Mutex()
 
@@ -97,20 +107,27 @@ class BudgetRepository(
      */
     fun refreshCurrentDate() {
         dateRefreshTrigger.update { it + 1L }
+        appScope.launch {
+            reconcileRollover()
+        }
     }
 
-    val recentTransactionsFlow: Flow<List<TransactionEntity>> =
-        transactionDao.getRecentTransactions(8)
+    val recentTransactionsFlow: Flow<List<Transaction>> =
+        transactionDao.getRecentTransactions(8).map { list -> list.map { it.toDomain() } }
 
-    fun getRecentTransactionsFlow(limit: Int): Flow<List<TransactionEntity>> =
-        transactionDao.getRecentTransactions(limit)
+    fun getRecentTransactionsFlow(limit: Int): Flow<List<Transaction>> =
+        transactionDao.getRecentTransactions(limit).map { list -> list.map { it.toDomain() } }
 
-    val allTransactionsFlow: Flow<List<TransactionEntity>> =
-        transactionDao.getAllTransactions()
+    val allTransactionsFlow: Flow<List<Transaction>> =
+        transactionDao.getAllTransactions().map { list -> list.map { it.toDomain() } }
 
-    val tagsFlow: Flow<List<TagEntity>> =
-        tagDao.getAllTags()
+    val tagsFlow: Flow<List<Tag>> =
+        tagDao.getAllTags().map { list -> list.map { it.toDomain() } }
 
+    /**
+     * Pure, side-effect-free read stream projecting active cycle budget info.
+     * Guaranteed never to execute persistence writes inside stream transformation.
+     */
     val budgetInfoFlow: Flow<BudgetInfo> = combine(
         preferencesRepository.userPreferencesFlow,
         transactionDao.getAllTransactions(),
@@ -119,49 +136,30 @@ class BudgetRepository(
         val today = currentDateProvider()
         val cycleDates = cycleEngine.calculateCycleDates(today, prefs.refillDayOfMonth)
 
-        val spentByCycle = allTransactions
+        val spentByCycleCents = allTransactions
             .groupBy { it.cycleKey }
-            .mapValues { (_, txList) -> roundToCents(txList.sumOf { it.amount }) }
+            .mapValues { (_, txList) -> txList.sumOf { it.amount } }
 
-        val resolution = cycleEngine.resolveCycleRollover(
+        val resolution = cycleEngine.resolveCycleRolloverCents(
             currentCycleKey = cycleDates.cycleKey,
             lastProcessedCycleKey = prefs.lastProcessedCycleKey,
             firstCycleKey = prefs.firstCycleKey,
-            currentRolloverAmount = prefs.currentRolloverAmount,
-            currentExtraSaved = prefs.totalExtraSaved,
-            monthlyRefillAmount = prefs.monthlyRefillAmount,
-            maxRolloverCap = prefs.maxRolloverCap,
-            spentByCycle = spentByCycle
+            currentRolloverCents = prefs.currentRolloverCents,
+            currentExtraSavedCents = prefs.totalExtraSavedCents,
+            monthlyRefillCents = prefs.monthlyRefillCents,
+            maxRolloverCapCents = prefs.maxRolloverCapCents,
+            spentByCycleCents = spentByCycleCents
         )
 
-        if (prefs.hasCompletedOnboarding && resolution.shouldPersist) {
-            rolloverPersistMutex.withLock {
-                val latestPrefs = preferencesRepository.userPreferencesFlow.first()
-                if (
-                    latestPrefs.lastProcessedCycleKey != resolution.processedCycleKey ||
-                    latestPrefs.firstCycleKey != resolution.firstCycleKey ||
-                    abs(latestPrefs.currentRolloverAmount - resolution.rolloverAmount) > 0.0001 ||
-                    abs(latestPrefs.totalExtraSaved - resolution.newTotalExtraSaved) > 0.0001
-                ) {
-                    preferencesRepository.updateRolloverAndOverflow(
-                        rollover = resolution.rolloverAmount,
-                        extraSaved = resolution.newTotalExtraSaved,
-                        cycleKey = resolution.processedCycleKey,
-                        firstCycleKey = resolution.firstCycleKey
-                    )
-                }
-            }
-        }
+        val totalSpentCents = spentByCycleCents[cycleDates.cycleKey] ?: 0L
+        val effectiveRolloverCents = resolution.rolloverAmountCents
+        val effectiveExtraSavedCents = resolution.newTotalExtraSavedCents
 
-        val totalSpent = spentByCycle[cycleDates.cycleKey] ?: 0.0
-        val effectiveRollover = resolution.rolloverAmount
-        val effectiveExtraSaved = resolution.newTotalExtraSaved
+        val totalCycleBudgetCents = prefs.monthlyRefillCents + effectiveRolloverCents
+        val remainingBalanceCents = totalCycleBudgetCents - totalSpentCents
 
-        val totalCycleBudget = roundToCents(prefs.monthlyRefillAmount + effectiveRollover)
-        val remainingBalance = roundToCents(totalCycleBudget - totalSpent)
-
-        val remainingPercentage = if (totalCycleBudget > 0.0) {
-            (remainingBalance / totalCycleBudget).coerceIn(0.0, 1.0).toFloat()
+        val remainingPercentage = if (totalCycleBudgetCents > 0L) {
+            (remainingBalanceCents.toDouble() / totalCycleBudgetCents.toDouble()).coerceIn(0.0, 1.0).toFloat()
         } else {
             0.0f
         }
@@ -170,70 +168,149 @@ class BudgetRepository(
             cycleKey = cycleDates.cycleKey,
             cycleName = cycleDates.cycleName,
             daysRemaining = cycleDates.daysRemaining,
-            monthlyBudget = roundToCents(prefs.monthlyRefillAmount),
-            rolloverAmount = effectiveRollover,
-            totalCycleBudget = totalCycleBudget,
-            totalSpent = totalSpent,
-            remainingBalance = remainingBalance,
+            monthlyBudgetCents = prefs.monthlyRefillCents,
+            rolloverAmountCents = effectiveRolloverCents,
+            totalCycleBudgetCents = totalCycleBudgetCents,
+            totalSpentCents = totalSpentCents,
+            remainingBalanceCents = remainingBalanceCents,
             remainingPercentage = remainingPercentage,
-            totalExtraSaved = effectiveExtraSaved,
+            totalExtraSavedCents = effectiveExtraSavedCents,
             refillDayOfMonth = prefs.refillDayOfMonth,
-            maxRolloverCap = roundToCents(prefs.maxRolloverCap),
-            hasCompletedOnboarding = prefs.hasCompletedOnboarding
+            maxRolloverCapCents = prefs.maxRolloverCapCents,
+            hasCompletedOnboarding = prefs.hasCompletedOnboarding,
+            hideDecimalPlaces = prefs.hideDecimalPlaces
         )
     }
         .distinctUntilChanged()
         .flowOn(defaultDispatcher)
 
-    fun getBreakdownForCycleFlow(cycleKey: String?): Flow<List<CategoryBreakdown>> = combine(
-        allTransactionsFlow,
-        preferencesRepository.userPreferencesFlow,
-        tagsFlow,
-        dateRefreshTrigger
-    ) { transactions, prefs, tags, _ ->
-        val targetCycleKey = if (cycleKey.isNullOrBlank()) {
+    /**
+     * Explicit operation reconciling and persisting rollover state to DataStore.
+     */
+    suspend fun reconcileRollover() = withContext(ioDispatcher) {
+        rolloverPersistMutex.withLock {
+            val prefs = preferencesRepository.userPreferencesFlow.first()
+            if (!prefs.hasCompletedOnboarding) return@withLock
+            val allTransactions = transactionDao.getAllTransactions().first()
             val today = currentDateProvider()
-            cycleEngine.calculateCycleDates(today, prefs.refillDayOfMonth).cycleKey
-        } else {
-            cycleKey
-        }
+            val cycleDates = cycleEngine.calculateCycleDates(today, prefs.refillDayOfMonth)
 
-        val filteredTransactions = if (targetCycleKey == "ALL") {
-            transactions
-        } else {
-            transactions.filter { it.cycleKey == targetCycleKey }
-        }
+            val spentByCycleCents = allTransactions
+                .groupBy { it.cycleKey }
+                .mapValues { (_, txList) -> txList.sumOf { it.amount } }
 
-        val totalSpent = roundToCents(filteredTransactions.sumOf { it.amount })
-        if (totalSpent <= 0.0) {
-            return@combine emptyList()
-        }
+            val resolution = cycleEngine.resolveCycleRolloverCents(
+                currentCycleKey = cycleDates.cycleKey,
+                lastProcessedCycleKey = prefs.lastProcessedCycleKey,
+                firstCycleKey = prefs.firstCycleKey,
+                currentRolloverCents = prefs.currentRolloverCents,
+                currentExtraSavedCents = prefs.totalExtraSavedCents,
+                monthlyRefillCents = prefs.monthlyRefillCents,
+                maxRolloverCapCents = prefs.maxRolloverCapCents,
+                spentByCycleCents = spentByCycleCents
+            )
 
-        val tagsMap = tags.associate { it.name to it.colorHex }
-
-        filteredTransactions
-            .groupBy { it.tag?.takeIf { t -> t.isNotBlank() } ?: UNTAGGED_LABEL }
-            .map { (tagName, txList) ->
-                val groupTotal = roundToCents(txList.sumOf { it.amount })
-                val color = if (tagName == UNTAGGED_LABEL) {
-                    UNTAGGED_COLOR
-                } else {
-                    txList.firstOrNull { !it.tagColor.isNullOrBlank() }?.tagColor
-                        ?: tagsMap[tagName]
-                        ?: DEFAULT_TAG_COLOR
-                }
-                val pct = ((groupTotal / totalSpent) * 100.0).toFloat()
-                CategoryBreakdown(
-                    tag = tagName,
-                    colorHex = color,
-                    totalAmount = groupTotal,
-                    percentage = pct
+            if (resolution.shouldPersist) {
+                preferencesRepository.updateRolloverAndOverflowCents(
+                    rolloverCents = resolution.rolloverAmountCents,
+                    extraSavedCents = resolution.newTotalExtraSavedCents,
+                    cycleKey = resolution.processedCycleKey,
+                    firstCycleKey = resolution.firstCycleKey
                 )
             }
-            .sortedByDescending { it.totalAmount }
+        }
+    }
+
+    /**
+     * Centralized history stream computing transactions, totals, and breakdown once.
+     * Prevents screens from re-aggregating and re-filtering history separately.
+     */
+    fun getCycleHistoryFlow(selectedCycleKey: String?): Flow<CycleHistory> = combine(
+        transactionDao.getAllTransactions(),
+        preferencesRepository.userPreferencesFlow,
+        tagDao.getAllTags(),
+        dateRefreshTrigger
+    ) { allTxEntities, prefs, allTagEntities, _ ->
+        val today = currentDateProvider()
+        val currentCycleKey = cycleEngine.calculateCycleDates(today, prefs.refillDayOfMonth).cycleKey
+        val allTx = allTxEntities.map { it.toDomain() }
+        val tags = allTagEntities.map { it.toDomain() }
+
+        val effectiveSelectedCycle = if (selectedCycleKey == currentCycleKey) null else selectedCycleKey
+
+        val filteredTransactions = when (effectiveSelectedCycle) {
+            "ALL" -> allTx
+            null -> allTx.filter { it.cycleKey == currentCycleKey }
+            else -> allTx.filter { it.cycleKey == effectiveSelectedCycle }
+        }
+
+        val historicalCycles = allTx
+            .map { it.cycleKey }
+            .distinct()
+            .filter { it.isNotBlank() && it != currentCycleKey }
+            .sortedDescending()
+
+        val totalSpentCents = filteredTransactions.sumOf { it.amountCents }
+
+        val spentByCycleCents = allTxEntities
+            .groupBy { it.cycleKey }
+            .mapValues { (_, txList) -> txList.sumOf { it.amount } }
+
+        val resolution = cycleEngine.resolveCycleRolloverCents(
+            currentCycleKey = currentCycleKey,
+            lastProcessedCycleKey = prefs.lastProcessedCycleKey,
+            firstCycleKey = prefs.firstCycleKey,
+            currentRolloverCents = prefs.currentRolloverCents,
+            currentExtraSavedCents = prefs.totalExtraSavedCents,
+            monthlyRefillCents = prefs.monthlyRefillCents,
+            maxRolloverCapCents = prefs.maxRolloverCapCents,
+            spentByCycleCents = spentByCycleCents
+        )
+        val activeSpentCents = spentByCycleCents[currentCycleKey] ?: 0L
+        val activeRemainingCents = (prefs.monthlyRefillCents + resolution.rolloverAmountCents) - activeSpentCents
+
+        val breakdown = if (totalSpentCents <= 0L) {
+            emptyList()
+        } else {
+            val tagsMap = tags.associate { it.name to it.colorHex }
+            filteredTransactions
+                .groupBy { it.tag?.takeIf { t -> t.isNotBlank() } ?: UNTAGGED_LABEL }
+                .map { (tagName, txList) ->
+                    val groupTotalCents = txList.sumOf { it.amountCents }
+                    val color = if (tagName == UNTAGGED_LABEL) {
+                        UNTAGGED_COLOR
+                    } else {
+                        txList.firstOrNull { !it.tagColor.isNullOrBlank() }?.tagColor
+                            ?: tagsMap[tagName]
+                            ?: DEFAULT_TAG_COLOR
+                    }
+                    val pct = ((groupTotalCents.toDouble() / totalSpentCents.toDouble()) * 100.0).toFloat()
+                    CategoryBreakdown(
+                        tag = tagName,
+                        colorHex = color,
+                        totalAmountCents = groupTotalCents,
+                        percentage = pct
+                    )
+                }
+                .sortedByDescending { it.totalAmountCents }
+        }
+
+        CycleHistory(
+            transactions = filteredTransactions,
+            totalSpentCents = totalSpentCents,
+            remainingBalanceCents = activeRemainingCents,
+            breakdown = breakdown,
+            availableCycles = historicalCycles,
+            selectedCycle = effectiveSelectedCycle,
+            currentCycleKey = currentCycleKey,
+            hideDecimalPlaces = prefs.hideDecimalPlaces
+        )
     }
         .distinctUntilChanged()
         .flowOn(defaultDispatcher)
+
+    fun getBreakdownForCycleFlow(cycleKey: String?): Flow<List<CategoryBreakdown>> =
+        getCycleHistoryFlow(cycleKey).map { it.breakdown }
 
     suspend fun addExpense(
         amount: Double,
@@ -254,7 +331,7 @@ class BudgetRepository(
             .ifBlank { cleanTag ?: DEFAULT_EXPENSE_DESCRIPTION }
 
         val entity = TransactionEntity(
-            amount = cleanAmount,
+            amount = Math.round(cleanAmount * 100.0),
             description = cleanDesc,
             timestamp = timestamp,
             cycleKey = cycleDates.cycleKey,
@@ -262,6 +339,7 @@ class BudgetRepository(
             tagColor = tagColor?.trim()?.takeIf { it.isNotBlank() }
         )
         transactionDao.insertTransaction(entity)
+        reconcileRollover()
     }
 
     suspend fun updateExpense(
@@ -285,7 +363,7 @@ class BudgetRepository(
             .ifBlank { cleanTag ?: DEFAULT_EXPENSE_DESCRIPTION }
 
         val updated = existing.copy(
-            amount = cleanAmount,
+            amount = Math.round(cleanAmount * 100.0),
             description = cleanDesc,
             timestamp = timestamp,
             cycleKey = cycleDates.cycleKey,
@@ -293,16 +371,14 @@ class BudgetRepository(
             tagColor = tagColor?.trim()?.takeIf { it.isNotBlank() }
         )
         transactionDao.updateTransaction(updated)
+        reconcileRollover()
     }
 
     suspend fun deleteExpense(id: Long) = withContext(ioDispatcher) {
         transactionDao.deleteTransactionById(id)
+        reconcileRollover()
     }
 
-    /**
-     * Inserts a new custom tag if its trimmed name is non-blank and does not collide
-     * case-insensitively with an existing tag. Returns `true` when added, `false` otherwise.
-     */
     suspend fun addTag(name: String, colorHex: String): Boolean = withContext(ioDispatcher) {
         val trimmedName = name.trim().take(MAX_TAG_NAME_LENGTH)
         val trimmedColor = colorHex.trim()
@@ -329,7 +405,31 @@ class BudgetRepository(
     }
 
     suspend fun resetExtraSaved() = withContext(ioDispatcher) {
-        preferencesRepository.resetExtraSaved()
+        rolloverPersistMutex.withLock {
+            val today = currentDateProvider()
+            val prefs = preferencesRepository.userPreferencesFlow.first()
+            val cycleKey = cycleEngine.calculateCycleDates(today, prefs.refillDayOfMonth).cycleKey
+            val allTransactions = transactionDao.getAllTransactions().first()
+            val spentByCycleCents = allTransactions
+                .groupBy { it.cycleKey }
+                .mapValues { (_, txList) -> txList.sumOf { it.amount } }
+            val resolution = cycleEngine.resolveCycleRolloverCents(
+                currentCycleKey = cycleKey,
+                lastProcessedCycleKey = prefs.lastProcessedCycleKey,
+                firstCycleKey = prefs.firstCycleKey,
+                currentRolloverCents = prefs.currentRolloverCents,
+                currentExtraSavedCents = 0L,
+                monthlyRefillCents = prefs.monthlyRefillCents,
+                maxRolloverCapCents = prefs.maxRolloverCapCents,
+                spentByCycleCents = spentByCycleCents
+            )
+            preferencesRepository.updateRolloverAndOverflowCents(
+                rolloverCents = resolution.rolloverAmountCents,
+                extraSavedCents = 0L,
+                cycleKey = cycleKey,
+                firstCycleKey = resolution.firstCycleKey
+            )
+        }
     }
 
     suspend fun exportBackupJson(): String = withContext(ioDispatcher) {
@@ -341,19 +441,20 @@ class BudgetRepository(
             version = CURRENT_BACKUP_VERSION,
             exportedAt = DateTimeFormatter.ISO_INSTANT.format(Instant.now()),
             preferences = BackupPreferences(
-                monthlyRefillAmount = roundToCents(prefs.monthlyRefillAmount),
+                monthlyRefillAmount = prefs.monthlyRefillAmount,
                 refillDayOfMonth = prefs.refillDayOfMonth,
-                maxRolloverCap = roundToCents(prefs.maxRolloverCap),
-                totalExtraSaved = roundToCents(prefs.totalExtraSaved),
-                currentRolloverAmount = roundToCents(prefs.currentRolloverAmount),
+                maxRolloverCap = prefs.maxRolloverCap,
+                totalExtraSaved = prefs.totalExtraSaved,
+                currentRolloverAmount = prefs.currentRolloverAmount,
                 hasCompletedOnboarding = prefs.hasCompletedOnboarding,
                 lastProcessedCycleKey = prefs.lastProcessedCycleKey,
-                firstCycleKey = prefs.firstCycleKey
+                firstCycleKey = prefs.firstCycleKey,
+                hideDecimalPlaces = prefs.hideDecimalPlaces
             ),
             tags = allTags.map { BackupTag(it.name, it.colorHex, it.orderIndex) },
             transactions = allTx.map {
                 BackupTransaction(
-                    amount = roundToCents(it.amount),
+                    amount = it.amount / 100.0,
                     description = it.description,
                     timestamp = it.timestamp,
                     cycleKey = it.cycleKey,
@@ -467,7 +568,7 @@ class BudgetRepository(
                     if (it.startsWith("#")) it else "#$it"
                 }
                 TransactionEntity(
-                    amount = roundToCents(tx.amount),
+                    amount = Math.round(roundToCents(tx.amount) * 100.0),
                     description = tx.description.trim().ifBlank { cleanTag ?: DEFAULT_EXPENSE_DESCRIPTION },
                     timestamp = tx.timestamp,
                     cycleKey = tx.cycleKey.trim(),
@@ -476,23 +577,36 @@ class BudgetRepository(
                 )
             }
 
+            // Snapshot previous data to roll back Room if preferences restoration fails
+            val prevTags = tagDao.getAllTags().first()
+            val prevTransactions = transactionDao.getAllTransactions().first()
+
             // Atomically replace tags and transactions within a single SQLite transaction
             transactionRunner {
                 tagDao.replaceAllTags(tagEntities)
                 transactionDao.replaceAllTransactions(transactionEntities)
             }
 
-            // Restore preferences
-            preferencesRepository.restoreAllPreferences(
-                monthlyBudget = roundToCents(prefs.monthlyRefillAmount),
-                refillDay = prefs.refillDayOfMonth,
-                maxCap = roundToCents(prefs.maxRolloverCap),
-                rollover = roundToCents(prefs.currentRolloverAmount),
-                extraSaved = roundToCents(prefs.totalExtraSaved),
-                onboardingCompleted = prefs.hasCompletedOnboarding,
-                lastCycleKey = prefs.lastProcessedCycleKey.trim(),
-                firstCycleKey = prefs.firstCycleKey.trim()
-            )
+            // Restore preferences, rolling back Room entities if DataStore fails
+            try {
+                preferencesRepository.restoreAllPreferences(
+                    monthlyBudget = prefs.monthlyRefillAmount,
+                    refillDay = prefs.refillDayOfMonth,
+                    maxCap = prefs.maxRolloverCap,
+                    rollover = prefs.currentRolloverAmount,
+                    extraSaved = prefs.totalExtraSaved,
+                    onboardingCompleted = prefs.hasCompletedOnboarding,
+                    lastCycleKey = prefs.lastProcessedCycleKey.trim(),
+                    firstCycleKey = prefs.firstCycleKey.trim(),
+                    hideDecimalPlaces = prefs.hideDecimalPlaces
+                )
+            } catch (t: Throwable) {
+                transactionRunner {
+                    tagDao.replaceAllTags(prevTags)
+                    transactionDao.replaceAllTransactions(prevTransactions)
+                }
+                throw t
+            }
 
             ImportResult(
                 transactionCount = transactionEntities.size,
@@ -516,6 +630,10 @@ class BudgetRepository(
         )
     }
 
+    suspend fun updateHideDecimalPlaces(hide: Boolean) = withContext(ioDispatcher) {
+        preferencesRepository.updateHideDecimalPlaces(hide)
+    }
+
     suspend fun updateSettings(
         monthlyBudget: Double,
         refillDay: Int,
@@ -528,11 +646,6 @@ class BudgetRepository(
 
         val currentPrefs = preferencesRepository.userPreferencesFlow.first()
         val clampedRefillDay = refillDay.coerceIn(1, 31)
-        preferencesRepository.updateAllSettings(
-            monthlyBudget = cleanBudget,
-            refillDay = clampedRefillDay,
-            maxCap = cleanCap
-        )
 
         if (currentPrefs.refillDayOfMonth != clampedRefillDay) {
             val allTx = transactionDao.getAllTransactions().first()
@@ -542,8 +655,17 @@ class BudgetRepository(
                 if (tx.cycleKey != newCycleKey) tx.copy(cycleKey = newCycleKey) else null
             }
             if (realigned.isNotEmpty()) {
-                transactionDao.updateTransactions(realigned)
+                transactionRunner {
+                    transactionDao.updateTransactions(realigned)
+                }
             }
         }
+
+        preferencesRepository.updateAllSettings(
+            monthlyBudget = cleanBudget,
+            refillDay = clampedRefillDay,
+            maxCap = cleanCap
+        )
+        reconcileRollover()
     }
 }

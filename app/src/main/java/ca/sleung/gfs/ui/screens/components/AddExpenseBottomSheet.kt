@@ -58,8 +58,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ca.sleung.gfs.R
-import ca.sleung.gfs.data.local.db.entity.TagEntity
 import ca.sleung.gfs.data.repository.BudgetRepository
+import ca.sleung.gfs.domain.model.Tag
 import ca.sleung.gfs.ui.theme.GFSThemeDefaults
 import ca.sleung.gfs.ui.theme.TABULAR_FIGURES_FEATURE
 import ca.sleung.gfs.ui.theme.parseHexColor
@@ -69,7 +69,7 @@ import ca.sleung.gfs.ui.util.CurrencyFormatter
 @Composable
 fun AddExpenseBottomSheet(
     remainingBalance: Double,
-    tags: List<TagEntity> = emptyList(),
+    tags: List<Tag> = emptyList(),
     onDismiss: () -> Unit,
     onSaveExpense: (amount: Double, description: String, tag: String?, tagColor: String?) -> Unit,
     sheetState: SheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -83,7 +83,7 @@ fun AddExpenseBottomSheet(
     val selectedTag = remember(tags, selectedTagId) { tags.find { it.id == selectedTagId } }
     val focusRequester = remember { FocusRequester() }
 
-    val amountValue = amountText.toDoubleOrNull() ?: 0.0
+    val amountValue = CurrencyFormatter.parseAmount(amountText) ?: 0.0
     val isOverspending = amountValue > 0.0 && amountValue > remainingBalance
 
     fun handleSave() {

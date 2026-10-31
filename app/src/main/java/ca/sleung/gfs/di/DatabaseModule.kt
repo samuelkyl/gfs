@@ -47,6 +47,35 @@ object DatabaseModule {
         }
     }
 
+    val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `transactions_new` (
+                    `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                    `amount` INTEGER NOT NULL,
+                    `description` TEXT NOT NULL,
+                    `timestamp` INTEGER NOT NULL,
+                    `cycleKey` TEXT NOT NULL,
+                    `tag` TEXT,
+                    `tagColor` TEXT
+                )
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                INSERT INTO `transactions_new` (`id`, `amount`, `description`, `timestamp`, `cycleKey`, `tag`, `tagColor`)
+                SELECT `id`, CAST(ROUND(`amount` * 100) AS INTEGER), `description`, `timestamp`, `cycleKey`, `tag`, `tagColor`
+                FROM `transactions`
+                """.trimIndent()
+            )
+            db.execSQL("DROP TABLE `transactions`")
+            db.execSQL("ALTER TABLE `transactions_new` RENAME TO `transactions`")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_transactions_timestamp` ON `transactions` (`timestamp`)")
+            db.execSQL("CREATE INDEX IF NOT EXISTS `index_transactions_cycleKey` ON `transactions` (`cycleKey`)")
+        }
+    }
+
     private fun seedDefaultTags(db: SupportSQLiteDatabase) {
         db.execSQL("INSERT INTO `tags` (`name`, `colorHex`, `orderIndex`) VALUES ('Eating Out', '#FF7043', 0)")
         db.execSQL("INSERT INTO `tags` (`name`, `colorHex`, `orderIndex`) VALUES ('Shopping', '#AB47BC', 1)")
@@ -64,7 +93,7 @@ object DatabaseModule {
             AppDatabase::class.java,
             "gfs.db"
         )
-            .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+            .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
             .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
             .addCallback(object : RoomDatabase.Callback() {
                 override fun onCreate(db: SupportSQLiteDatabase) {

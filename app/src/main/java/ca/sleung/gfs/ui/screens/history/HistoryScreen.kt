@@ -2,6 +2,7 @@ package ca.sleung.gfs.ui.screens.history
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,9 +44,9 @@ import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ca.sleung.gfs.R
-import ca.sleung.gfs.data.local.db.entity.TransactionEntity
 import ca.sleung.gfs.data.repository.BudgetRepository
 import ca.sleung.gfs.domain.model.CategoryBreakdown
+import ca.sleung.gfs.domain.model.Transaction
 import ca.sleung.gfs.ui.screens.components.CategoryPieChart
 import ca.sleung.gfs.ui.screens.components.EditExpenseBottomSheet
 import ca.sleung.gfs.ui.theme.GFSTheme
@@ -84,7 +85,7 @@ fun HistoryContent(
     uiState: HistoryUiState,
     onNavigateBack: () -> Unit,
     onSelectCycle: (String?) -> Unit,
-    onSelectTransaction: (TransactionEntity) -> Unit,
+    onSelectTransaction: (Transaction) -> Unit,
     onDismissEdit: () -> Unit,
     onUpdateExpense: (id: Long, amount: Double, description: String, timestamp: Long, tag: String?, tagColor: String?) -> Unit,
     onDeleteExpense: (id: Long) -> Unit,
@@ -115,7 +116,7 @@ fun HistoryContent(
                     Text(
                         text = stringResource(
                             R.string.history_spent_header,
-                            CurrencyFormatter.formatCurrency(uiState.totalSpent)
+                            CurrencyFormatter.formatCurrency(uiState.totalSpent, hideDecimals = uiState.hideDecimalPlaces)
                         ),
                         style = MaterialTheme.typography.labelMedium.copy(
                             fontFeatureSettings = TABULAR_FIGURES_FEATURE
@@ -161,7 +162,8 @@ fun HistoryContent(
             item(key = "breakdown_chart") {
                 CategoryPieChart(
                     breakdown = uiState.breakdown,
-                    totalSpent = uiState.totalSpent
+                    totalSpent = uiState.totalSpent,
+                    hideDecimals = uiState.hideDecimalPlaces
                 )
             }
 
@@ -200,6 +202,7 @@ fun HistoryContent(
                 items(uiState.transactions, key = { it.id }) { tx ->
                     HistoryTransactionRow(
                         transaction = tx,
+                        hideDecimals = uiState.hideDecimalPlaces,
                         onClick = { onSelectTransaction(tx) }
                     )
                 }
@@ -308,10 +311,12 @@ private fun CycleChip(
 
 @Composable
 private fun HistoryTransactionRow(
-    transaction: TransactionEntity,
+    transaction: Transaction,
+    hideDecimals: Boolean = false,
     onClick: () -> Unit
 ) {
     val extendedColors = GFSThemeDefaults.extendedColors
+    val isDark = isSystemInDarkTheme()
     val dateFormatter = remember {
         DateTimeFormatter.ofPattern("MMM d, yyyy · h:mm a").withZone(ZoneId.systemDefault())
     }
@@ -348,11 +353,12 @@ private fun HistoryTransactionRow(
                     modifier = Modifier.weight(1f, fill = false)
                 )
                 if (!transaction.tag.isNullOrBlank()) {
-                    val tagColor = parseHexColor(transaction.tagColor ?: BudgetRepository.DEFAULT_TAG_COLOR)
+                    val rawColor = parseHexColor(transaction.tagColor ?: BudgetRepository.DEFAULT_TAG_COLOR)
+                    val tagTextColor = ca.sleung.gfs.ui.theme.accessibleTagTextColor(rawColor, isDark)
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(6.dp))
-                            .background(tagColor.copy(alpha = 0.16f))
+                            .background(rawColor.copy(alpha = 0.16f))
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
                         Text(
@@ -360,7 +366,7 @@ private fun HistoryTransactionRow(
                             style = MaterialTheme.typography.labelSmall,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = tagColor,
+                            color = tagTextColor,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -375,7 +381,7 @@ private fun HistoryTransactionRow(
         }
 
         Text(
-            text = CurrencyFormatter.formatExpenseItem(transaction.amount),
+            text = CurrencyFormatter.formatExpenseItem(transaction.amount, hideDecimals = hideDecimals),
             style = MaterialTheme.typography.titleMedium.copy(
                 fontFeatureSettings = TABULAR_FIGURES_FEATURE
             ),
@@ -400,9 +406,9 @@ private fun HistoryScreenPreview() {
         HistoryContent(
             uiState = HistoryUiState(
                 transactions = listOf(
-                    TransactionEntity(
+                    Transaction(
                         id = 1,
-                        amount = 42.50,
+                        amountCents = 4250L,
                         description = "Ramen with friends",
                         timestamp = 1_760_500_000_000L,
                         cycleKey = "2026-10",
@@ -415,7 +421,7 @@ private fun HistoryScreenPreview() {
                 currentCycleKey = "2026-10",
                 remainingBalance = 457.50,
                 breakdown = listOf(
-                    CategoryBreakdown("Eating Out", "#FF7043", 42.50, 100f)
+                    CategoryBreakdown("Eating Out", "#FF7043", 4250L, 100f)
                 )
             ),
             onNavigateBack = {},

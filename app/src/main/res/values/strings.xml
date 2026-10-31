@@ -115,5 +115,10 @@
     <string name="snackbar_backup_too_large">Backup file exceeds 5 MB limit</string>
     <string name="snackbar_backup_unreadable">Unable to read selected backup file</string>
     <string name="snackbar_backup_export_failed">Unable to export backup file</string>
+    <string name="settings_hide_decimals_label">Hide decimal places</string>
+    <string name="settings_hide_decimals_desc">Round amounts to whole dollars across views</string>
+    <string name="dialog_delete_tag_title">Delete Tag?</string>
+    <string name="dialog_delete_tag_body">Remove \"%1$s\" from available tags? Past expenses with this tag will preserve their label.</string>
+    <string name="dialog_delete_tag_action">Delete Tag</string>
     <string name="settings_version_footer">gfs v%1$s</string>
 </resources>

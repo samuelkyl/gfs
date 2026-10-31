@@ -80,7 +80,7 @@ fun OnboardingContent(
 ) {
     val extendedColors = GFSThemeDefaults.extendedColors
     var budgetText by rememberSaveable { mutableStateOf("500") }
-    val budgetValue = budgetText.toDoubleOrNull() ?: 0.0
+    val budgetValue = CurrencyFormatter.parseAmount(budgetText) ?: 0.0
     val formattedMaxCap = CurrencyFormatter.formatCurrency(budgetValue * 2.0)
 
     Scaffold(

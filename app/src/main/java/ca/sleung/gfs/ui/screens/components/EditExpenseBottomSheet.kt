@@ -65,9 +65,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import ca.sleung.gfs.R
-import ca.sleung.gfs.data.local.db.entity.TagEntity
-import ca.sleung.gfs.data.local.db.entity.TransactionEntity
 import ca.sleung.gfs.data.repository.BudgetRepository
+import ca.sleung.gfs.domain.model.Tag
+import ca.sleung.gfs.domain.model.Transaction
 import ca.sleung.gfs.ui.theme.GFSThemeDefaults
 import ca.sleung.gfs.ui.theme.TABULAR_FIGURES_FEATURE
 import ca.sleung.gfs.ui.theme.parseHexColor
@@ -80,8 +80,8 @@ import java.time.format.DateTimeFormatter
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun EditExpenseBottomSheet(
-    transaction: TransactionEntity,
-    tags: List<TagEntity> = emptyList(),
+    transaction: Transaction,
+    tags: List<Tag> = emptyList(),
     remainingBalance: Double? = null,
     isInActiveCycle: Boolean = false,
     onDismiss: () -> Unit,
@@ -112,7 +112,7 @@ fun EditExpenseBottomSheet(
         val originalTag = transaction.tag?.takeIf { it.isNotBlank() }
         if (originalTag != null && tags.none { it.name.equals(originalTag, ignoreCase = true) }) {
             listOf(
-                TagEntity(
+                Tag(
                     id = -1L,
                     name = originalTag,
                     colorHex = transaction.tagColor ?: BudgetRepository.DEFAULT_TAG_COLOR
@@ -134,7 +134,7 @@ fun EditExpenseBottomSheet(
         dateFormatter.format(Instant.ofEpochMilli(selectedTimestamp))
     }
 
-    val amountValue = amountText.toDoubleOrNull() ?: 0.0
+    val amountValue = CurrencyFormatter.parseAmount(amountText) ?: 0.0
     val deltaOverBudget = remember(amountValue, remainingBalance, isInActiveCycle, transaction.amount) {
         if (isInActiveCycle && remainingBalance != null && amountValue > 0.0) {
             val projectedRemaining = remainingBalance + transaction.amount - amountValue

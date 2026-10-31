@@ -1,19 +1,18 @@
 package ca.sleung.gfs.ui.screens.dashboard
 
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -45,7 +44,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -57,15 +55,16 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.tooling.preview.PreviewLightDark
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import ca.sleung.gfs.R
-import ca.sleung.gfs.data.local.db.entity.TransactionEntity
 import ca.sleung.gfs.data.repository.BudgetRepository
 import ca.sleung.gfs.domain.model.BudgetInfo
+import ca.sleung.gfs.domain.model.Transaction
 import ca.sleung.gfs.ui.screens.components.AddExpenseBottomSheet
 import ca.sleung.gfs.ui.theme.GFSTheme
 import ca.sleung.gfs.ui.theme.GFSThemeDefaults
@@ -193,69 +192,181 @@ fun DashboardContent(
             }
         }
 
-        LazyColumn(
-            state = listState,
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .padding(horizontal = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+                .padding(horizontal = 20.dp)
         ) {
-            // Hero Section: Dynamic ambient background & pacing bar
-            item(key = "hero_section") {
-                HeroSection(
-                    cycleName = budget.cycleName,
-                    daysRemaining = budget.daysRemaining,
-                    remainingBalance = budget.remainingBalance,
-                    totalCycleBudget = budget.totalCycleBudget,
-                    percentage = budget.remainingPercentage,
-                    accentColor = animatedAccentColor
-                )
-            }
+            val isWideScreen = maxWidth >= 600.dp
 
-            // Recent Expenses Section Header
-            item(key = "recent_header") {
+            if (isWideScreen) {
+                // Adaptive layout for Tablets and Foldables: Dual-pane side-by-side
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier.fillMaxSize(),
+                    horizontalArrangement = Arrangement.spacedBy(28.dp),
+                    verticalAlignment = Alignment.Top
                 ) {
-                    Text(
-                        text = stringResource(R.string.dashboard_recent_activity),
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        letterSpacing = 1.sp
-                    )
-                    TextButton(onClick = onNavigateToHistory) {
-                        Text(
-                            text = stringResource(R.string.dashboard_view_all),
-                            style = MaterialTheme.typography.labelMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = extendedColors.positiveAccent
-                        )
+                    // Left Pane: Hero Section
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(top = 4.dp)
+                    ) {
+                        if (uiState.isLoading) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(220.dp)
+                                    .clip(RoundedCornerShape(32.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                            )
+                        } else {
+                            HeroSection(
+                                cycleName = budget.cycleName,
+                                daysRemaining = budget.daysRemaining,
+                                remainingBalance = budget.remainingBalance,
+                                totalCycleBudget = budget.totalCycleBudget,
+                                percentage = budget.remainingPercentage,
+                                accentColor = animatedAccentColor,
+                                hideDecimals = budget.hideDecimalPlaces
+                            )
+                        }
+                    }
+
+                    // Right Pane: Recent Activity
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .weight(1.2f)
+                            .fillMaxHeight(),
+                        verticalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        item(key = "recent_header") {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = stringResource(R.string.dashboard_recent_activity),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    letterSpacing = 1.sp
+                                )
+                                TextButton(onClick = onNavigateToHistory) {
+                                    Text(
+                                        text = stringResource(R.string.dashboard_view_all),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = extendedColors.positiveAccent
+                                    )
+                                }
+                            }
+                        }
+
+                        if (uiState.recentTransactions.isEmpty()) {
+                            item(key = "empty_recent") {
+                                Text(
+                                    text = stringResource(R.string.dashboard_empty_activity),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.outline,
+                                    modifier = Modifier.padding(vertical = 12.dp)
+                                )
+                            }
+                        } else {
+                            items(uiState.recentTransactions, key = { it.id }) { tx ->
+                                RecentTransactionRow(
+                                    transaction = tx,
+                                    hideDecimals = budget.hideDecimalPlaces
+                                )
+                            }
+                        }
+
+                        item(key = "fab_bottom_spacer") {
+                            Spacer(modifier = Modifier.height(76.dp))
+                        }
                     }
                 }
-            }
-
-            // Recent Expenses List (Clean, borderless, read-only)
-            if (uiState.recentTransactions.isEmpty()) {
-                item(key = "empty_recent") {
-                    Text(
-                        text = stringResource(R.string.dashboard_empty_activity),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.outline,
-                        modifier = Modifier.padding(vertical = 12.dp)
-                    )
-                }
             } else {
-                items(uiState.recentTransactions, key = { it.id }) { tx ->
-                    RecentTransactionRow(transaction = tx)
-                }
-            }
+                // Compact Screen: Single-column scrollable
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    verticalArrangement = Arrangement.spacedBy(20.dp)
+                ) {
+                    // Hero Section: Dynamic ambient background & pacing bar
+                    item(key = "hero_section") {
+                        if (uiState.isLoading) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(220.dp)
+                                    .clip(RoundedCornerShape(32.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                            )
+                        } else {
+                            HeroSection(
+                                cycleName = budget.cycleName,
+                                daysRemaining = budget.daysRemaining,
+                                remainingBalance = budget.remainingBalance,
+                                totalCycleBudget = budget.totalCycleBudget,
+                                percentage = budget.remainingPercentage,
+                                accentColor = animatedAccentColor,
+                                hideDecimals = budget.hideDecimalPlaces
+                            )
+                        }
+                    }
 
-            item(key = "fab_bottom_spacer") {
-                Spacer(modifier = Modifier.height(76.dp))
+                    // Recent Expenses Section Header
+                    item(key = "recent_header") {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = stringResource(R.string.dashboard_recent_activity),
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                letterSpacing = 1.sp
+                            )
+                            TextButton(onClick = onNavigateToHistory) {
+                                Text(
+                                    text = stringResource(R.string.dashboard_view_all),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = extendedColors.positiveAccent
+                                )
+                            }
+                        }
+                    }
+
+                    // Recent Expenses List (Clean, borderless, read-only)
+                    if (uiState.recentTransactions.isEmpty()) {
+                        item(key = "empty_recent") {
+                            Text(
+                                text = stringResource(R.string.dashboard_empty_activity),
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.outline,
+                                modifier = Modifier.padding(vertical = 12.dp)
+                            )
+                        }
+                    } else {
+                        items(uiState.recentTransactions, key = { it.id }) { tx ->
+                            RecentTransactionRow(
+                                transaction = tx,
+                                hideDecimals = budget.hideDecimalPlaces
+                            )
+                        }
+                    }
+
+                    item(key = "fab_bottom_spacer") {
+                        Spacer(modifier = Modifier.height(76.dp))
+                    }
+                }
             }
         }
 
@@ -278,7 +389,8 @@ private fun HeroSection(
     remainingBalance: Double,
     totalCycleBudget: Double,
     percentage: Float,
-    accentColor: Color
+    accentColor: Color,
+    hideDecimals: Boolean = false
 ) {
     val animatedProgress by animateFloatAsState(
         targetValue = percentage.coerceIn(0f, 1f),
@@ -286,22 +398,11 @@ private fun HeroSection(
         label = "heroProgress"
     )
 
-    val infiniteTransition = rememberInfiniteTransition(label = "cyclePulse")
-    val pulseAlpha by infiniteTransition.animateFloat(
-        initialValue = 1f,
-        targetValue = 0.35f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1200),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "pulseAlpha"
-    )
-
-    val formattedRemaining = remember(remainingBalance) {
-        CurrencyFormatter.formatCurrency(remainingBalance)
+    val formattedRemaining = remember(remainingBalance, hideDecimals) {
+        CurrencyFormatter.formatCurrency(remainingBalance, hideDecimals = hideDecimals)
     }
-    val formattedBudget = remember(totalCycleBudget) {
-        CurrencyFormatter.formatCurrency(totalCycleBudget)
+    val formattedBudget = remember(totalCycleBudget, hideDecimals) {
+        CurrencyFormatter.formatCurrency(totalCycleBudget, hideDecimals = hideDecimals)
     }
     val pctInt = (percentage * 100).roundToInt()
     val cycleStatusText = pluralStringResource(
@@ -360,7 +461,6 @@ private fun HeroSection(
                         Box(
                             modifier = Modifier
                                 .size(6.dp)
-                                .alpha(pulseAlpha)
                                 .clip(CircleShape)
                                 .background(accentColor)
                         )
@@ -454,8 +554,12 @@ private fun HeroSection(
 }
 
 @Composable
-private fun RecentTransactionRow(transaction: TransactionEntity) {
+private fun RecentTransactionRow(
+    transaction: Transaction,
+    hideDecimals: Boolean = false
+) {
     val extendedColors = GFSThemeDefaults.extendedColors
+    val isDark = isSystemInDarkTheme()
     val dateFormatter = remember {
         DateTimeFormatter.ofPattern("MMM d").withZone(ZoneId.systemDefault())
     }
@@ -490,11 +594,12 @@ private fun RecentTransactionRow(transaction: TransactionEntity) {
                     modifier = Modifier.weight(1f, fill = false)
                 )
                 if (!transaction.tag.isNullOrBlank()) {
-                    val tagColor = parseHexColor(transaction.tagColor ?: BudgetRepository.DEFAULT_TAG_COLOR)
+                    val rawColor = parseHexColor(transaction.tagColor ?: BudgetRepository.DEFAULT_TAG_COLOR)
+                    val tagTextColor = ca.sleung.gfs.ui.theme.accessibleTagTextColor(rawColor, isDark)
                     Box(
                         modifier = Modifier
                             .clip(RoundedCornerShape(6.dp))
-                            .background(tagColor.copy(alpha = 0.16f))
+                            .background(rawColor.copy(alpha = 0.16f))
                             .padding(horizontal = 6.dp, vertical = 2.dp)
                     ) {
                         Text(
@@ -502,7 +607,7 @@ private fun RecentTransactionRow(transaction: TransactionEntity) {
                             style = MaterialTheme.typography.labelSmall,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.SemiBold,
-                            color = tagColor,
+                            color = tagTextColor,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
@@ -517,7 +622,7 @@ private fun RecentTransactionRow(transaction: TransactionEntity) {
         }
 
         Text(
-            text = CurrencyFormatter.formatExpenseItem(transaction.amount),
+            text = CurrencyFormatter.formatExpenseItem(transaction.amount, hideDecimals = hideDecimals),
             style = MaterialTheme.typography.titleMedium.copy(
                 fontFeatureSettings = TABULAR_FIGURES_FEATURE
             ),
@@ -533,7 +638,7 @@ private fun DashboardScreenPreview() {
     GFSTheme(dynamicColor = false) {
         DashboardContent(
             uiState = DashboardUiState(
-                budgetInfo = BudgetInfo(
+                budgetInfo = BudgetInfo.fromDouble(
                     cycleKey = "2026-10",
                     cycleName = "October",
                     daysRemaining = 14,
@@ -545,18 +650,66 @@ private fun DashboardScreenPreview() {
                     remainingPercentage = 0.67f
                 ),
                 recentTransactions = listOf(
-                    TransactionEntity(
+                    Transaction(
                         id = 1,
-                        amount = 35.0,
+                        amountCents = 3500L,
                         description = "Dinner with friends",
                         timestamp = 1_760_500_000_000L,
                         cycleKey = "2026-10",
                         tag = "Eating Out",
                         tagColor = "#FF7043"
                     ),
-                    TransactionEntity(
+                    Transaction(
                         id = 2,
-                        amount = 6.50,
+                        amountCents = 650L,
+                        description = "Morning Latte",
+                        timestamp = 1_760_410_000_000L,
+                        cycleKey = "2026-10",
+                        tag = "Coffee & Drinks",
+                        tagColor = "#26A69A"
+                    )
+                )
+            ),
+            onNavigateToHistory = {},
+            onNavigateToSettings = {},
+            onOpenAddSheet = {},
+            onCloseAddSheet = {},
+            onAddExpense = { _, _, _, _ -> },
+            onLoadMore = {}
+        )
+    }
+}
+
+@Preview(name = "Tablet Landscape", device = "spec:width=1280dp,height=800dp,dpi=240")
+@Composable
+private fun DashboardScreenTabletPreview() {
+    GFSTheme(dynamicColor = false) {
+        DashboardContent(
+            uiState = DashboardUiState(
+                budgetInfo = BudgetInfo.fromDouble(
+                    cycleKey = "2026-10",
+                    cycleName = "October",
+                    daysRemaining = 14,
+                    monthlyBudget = 500.0,
+                    rolloverAmount = 150.0,
+                    totalCycleBudget = 650.0,
+                    totalSpent = 211.50,
+                    remainingBalance = 438.50,
+                    remainingPercentage = 0.67f
+                ),
+                recentTransactions = listOf(
+                    Transaction(
+                        id = 1,
+                        amountCents = 3500L,
+                        description = "Dinner with friends",
+                        timestamp = 1_760_500_000_000L,
+                        cycleKey = "2026-10",
+                        tag = "Eating Out",
+                        tagColor = "#FF7043"
+                    ),
+                    Transaction(
+                        id = 2,
+                        amountCents = 650L,
                         description = "Morning Latte",
                         timestamp = 1_760_410_000_000L,
                         cycleKey = "2026-10",
