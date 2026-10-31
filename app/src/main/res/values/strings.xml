@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">gfs</string>
+    <string name="app_full_title">Guilt-Free Spending</string>
+
+    <!-- Common -->
+    <string name="cd_back">Navigate back</string>
+    <string name="cd_close">Close</string>
+    <string name="cd_settings">Open settings</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_ok">OK</string>
+    <string name="action_delete">Delete</string>
+    <string name="currency_symbol">$</string>
+    <string name="default_expense_description">Guilt-Free Expense</string>
+    <string name="tag_untagged">Untagged</string>
+
+    <!-- Onboarding -->
+    <string name="onboarding_welcome_title">Welcome to\nGuilt-Free Spending</string>
+    <string name="onboarding_welcome_subtitle">Once bills and savings are set, this is the money you can spend completely guilt-free.</string>
+    <string name="onboarding_budget_label">MONTHLY GUILT-FREE BUDGET</string>
+    <string name="onboarding_refills_first">Refills on the 1st</string>
+    <string name="onboarding_max_rollover_prefix">Max rollover: </string>
+    <string name="onboarding_max_rollover_note">(2× budget, can be adjusted in Settings later)</string>
+    <string name="onboarding_cta">Start Spending Guilt-Free →</string>
+
+    <!-- Dashboard -->
+    <string name="dashboard_available_to_spend">AVAILABLE TO SPEND</string>
+    <string name="dashboard_pct_remaining">%1$d%% remaining</string>
+    <string name="dashboard_of_budget">of %1$s</string>
+    <string name="dashboard_recent_activity">RECENT ACTIVITY</string>
+    <string name="dashboard_view_all">View All →</string>
+    <string name="dashboard_empty_activity">No expenses logged yet. Enjoy your guilt-free spending!</string>
+    <string name="dashboard_log_expense_cd">Log expense</string>
+    <string name="dashboard_hero_a11y">%1$s available to spend, %2$d%% of %3$s remaining. %4$s.</string>
+
+    <plurals name="days_left">
+        <item quantity="one">%1$s · %2$d day left</item>
+        <item quantity="other">%1$s · %2$d days left</item>
+    </plurals>
+
+    <!-- Add & Edit Expense Sheets -->
+    <string name="sheet_log_expense_title">Log Expense</string>
+    <string name="sheet_edit_expense_title">Edit Expense</string>
+    <string name="sheet_amount_label">Amount ($)</string>
+    <string name="sheet_description_optional_label">Description (Optional)</string>
+    <string name="sheet_description_label">Description / Name</string>
+    <string name="sheet_description_placeholder_default">e.g. Concert tickets, Ramen</string>
+    <string name="sheet_description_placeholder_tag">Using \"%1$s\"</string>
+    <string name="sheet_date_label">Date</string>
+    <string name="sheet_select_date_cd">Select date</string>
+    <string name="sheet_tag_optional_header">TAG (OPTIONAL)</string>
+    <string name="sheet_assigned_tag_header">ASSIGNED TAG</string>
+    <string name="sheet_overspending_warning">Amount exceeds current balance. Deficit will carry over to next month.</string>
+    <string name="sheet_save_expense">Save Expense</string>
+    <string name="sheet_update_expense">Update Expense</string>
+    <string name="dialog_delete_expense_title">Delete Expense?</string>
+    <string name="dialog_delete_expense_body">Delete \"%1$s\" (%2$s)? That amount will immediately return to your cycle balance.</string>
+
+    <!-- History & Breakdown -->
+    <string name="history_title">Spending History</string>
+    <string name="history_spent_header">Spent: %1$s</string>
+    <string name="history_select_cycle">SELECT CYCLE</string>
+    <string name="history_cycle_current">Current Cycle</string>
+    <string name="history_cycle_all_time">All Time</string>
+    <string name="history_transactions_header">TRANSACTIONS</string>
+    <string name="history_tap_to_edit">Tap to edit</string>
+    <string name="history_empty_cycle">No recorded expenses in this cycle.</string>
+    <string name="breakdown_header">SPENDING BREAKDOWN</string>
+    <string name="breakdown_spent_center">SPENT</string>
+    <string name="breakdown_empty">No expenses recorded in this cycle</string>
+    <plurals name="breakdown_chart_a11y">
+        <item quantity="one">Spending breakdown donut chart, total spent %1$s across %2$d category</item>
+        <item quantity="other">Spending breakdown donut chart, total spent %1$s across %2$d categories</item>
+    </plurals>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings &amp; Details</string>
+    <string name="settings_cycle_breakdown">CURRENT CYCLE BREAKDOWN</string>
+    <string name="settings_reset_extra_saved">Reset Extra Saved</string>
+    <string name="settings_tile_monthly">MONTHLY</string>
+    <string name="settings_tile_rollover">ROLLOVER</string>
+    <string name="settings_tile_extra_saved">EXTRA SAVED</string>
+    <string name="settings_customize_tags">CUSTOMIZE TAGS</string>
+    <plurals name="tags_count">
+        <item quantity="one">%1$d tag</item>
+        <item quantity="other">%1$d tags</item>
+    </plurals>
+    <string name="settings_delete_tag_cd">Remove tag %1$s</string>
+    <string name="settings_new_tag_placeholder">e.g. Travel, Gym, Books</string>
+    <string name="settings_add_tag_button">+ Add</string>
+    <string name="settings_color_label">Color:</string>
+    <string name="settings_color_swatch_cd">Color option %1$s</string>
+    <string name="settings_backup_header">DATA MANAGEMENT &amp; BACKUP</string>
+    <plurals name="settings_db_summary">
+        <item quantity="one">Database v3 · %1$d transaction recorded</item>
+        <item quantity="other">Database v3 · %1$d transactions recorded</item>
+    </plurals>
+    <string name="settings_export_json">Export (JSON)</string>
+    <string name="settings_import_json">Import (JSON)</string>
+    <string name="settings_share_backup_chooser">Export GFS Backup</string>
+    <string name="settings_config_header">CONFIGURATION</string>
+    <string name="settings_monthly_refill_label">Monthly Refill Amount ($)</string>
+    <string name="settings_refill_day_label">Refill Day of Month (1–31)</string>
+    <string name="settings_max_cap_label">Max Rollover Cap ($)</string>
+    <string name="settings_error_monthly_budget">Enter an amount greater than $0</string>
+    <string name="settings_error_refill_day">Enter a day between 1 and 31</string>
+    <string name="settings_error_max_cap">Enter $0 or greater</string>
+    <string name="settings_save_changes">Save Changes</string>
+    <string name="dialog_reset_extra_title">Reset Extra Saved?</string>
+    <string name="dialog_reset_extra_body">This will reset your total accumulated extra savings counter to $0.</string>
+    <string name="dialog_reset_extra_confirm">Reset to $0</string>
+    <string name="dialog_import_confirm_title">Import Backup?</string>
+    <string name="dialog_import_confirm_body">Importing a backup will replace your current budget settings, tags, and logged expenses. Make sure you have exported a backup first if you want to keep your current data.</string>
+    <string name="dialog_import_confirm_action">Replace &amp; Restore</string>
+    <string name="snackbar_backup_too_large">Backup file exceeds 5 MB limit</string>
+    <string name="snackbar_backup_unreadable">Unable to read selected backup file</string>
+    <string name="snackbar_backup_export_failed">Unable to export backup file</string>
+    <string name="settings_version_footer">gfs v%1$s</string>
+</resources>

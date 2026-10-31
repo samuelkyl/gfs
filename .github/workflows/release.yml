@@ -1,0 +1,160 @@
+name: Release APK
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing SemVer git tag to publish (e.g. v0.1.0)'
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build, Sign & Publish GitHub Release
+    runs-on: ubuntu-24.04
+
+    env:
+      GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx2560m -XX:MaxMetaspaceSize=512m -XX:+UseG1GC -XX:+ParallelRefProcEnabled"
+
+    steps:
+      - name: Resolve & Validate SemVer Tag
+        id: semver
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          TAG_NAME="${INPUT_TAG:-$REF_NAME}"
+          if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$TAG_NAME' is not a valid SemVer tag (expected vMAJOR.MINOR.PATCH, e.g. v0.1.0)"
+            exit 1
+          fi
+          VERSION_NAME="${TAG_NAME#v}"
+          if [[ "$VERSION_NAME" == *-* ]]; then
+            IS_PRERELEASE="true"
+          else
+            IS_PRERELEASE="false"
+          fi
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "version_name=$VERSION_NAME" >> "$GITHUB_OUTPUT"
+          echo "is_prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Tag
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.semver.outputs.tag_name }}
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v5
+        with:
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY || 'XnEe5S7f9kMeOEh5iZenrQ==' }}
+
+      - name: Decode Release Keystore
+        id: keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ]; then
+            echo "::error::Release signing secrets (ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD) must be configured."
+            exit 1
+          fi
+          KEYSTORE_PATH="$RUNNER_TEMP/gfs-release.jks"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$KEYSTORE_PATH"
+          chmod 600 "$KEYSTORE_PATH"
+          echo "keystore_path=$KEYSTORE_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Assemble Signed Release APK
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ steps.keystore.outputs.keystore_path }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          VERSION_NAME: ${{ steps.semver.outputs.version_name }}
+        run: ./gradlew assembleRelease -PversionName="$VERSION_NAME"
+
+      - name: Verify Signature & Prepare Release Assets
+        id: assets
+        env:
+          TAG_NAME: ${{ steps.semver.outputs.tag_name }}
+        run: |
+          APK_SOURCE="app/build/outputs/apk/release/app-release.apk"
+          if [ ! -f "$APK_SOURCE" ]; then
+            echo "::error::Signed release APK not found at $APK_SOURCE"
+            exit 1
+          fi
+
+          APKSIGNER=$(ls -1 "$ANDROID_HOME/build-tools/"*/apksigner | sort -V | tail -n 1)
+          "$APKSIGNER" verify --verbose "$APK_SOURCE"
+
+          mkdir -p release-assets
+          ASSET_APK="gfs-${TAG_NAME}.apk"
+          cp "$APK_SOURCE" "release-assets/$ASSET_APK"
+          (
+            cd release-assets
+            sha256sum "$ASSET_APK" > "${ASSET_APK}.sha256"
+          )
+
+          SHA256_HASH=$(awk '{print $1}' "release-assets/${ASSET_APK}.sha256")
+          APK_SIZE=$(du -h "release-assets/$ASSET_APK" | awk '{print $1}')
+
+          {
+            echo "### 📦 Download & Install"
+            echo "Download **[${ASSET_APK}](https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG_NAME}/${ASSET_APK})** (${APK_SIZE}) directly onto your Android device (Android 8.0 / API 26+) to install or update in place."
+            echo ""
+            echo "| Asset | SHA-256 Checksum |"
+            echo "| :--- | :--- |"
+            echo "| \`${ASSET_APK}\` | \`${SHA256_HASH}\` |"
+          } > release-notes-header.md
+
+      - name: Upload Release APK Artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: gfs-${{ steps.semver.outputs.tag_name }}-release
+          path: release-assets/*
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.semver.outputs.tag_name }}
+          IS_PRERELEASE: ${{ steps.semver.outputs.is_prerelease }}
+        run: |
+          PRERELEASE_ARGS=()
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            PRERELEASE_ARGS+=(--prerelease)
+          fi
+
+          if gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release upload "$TAG_NAME" release-assets/* --clobber
+          else
+            gh release create "$TAG_NAME" \
+              release-assets/* \
+              --title "gfs ${TAG_NAME}" \
+              --notes-file release-notes-header.md \
+              --generate-notes \
+              "${PRERELEASE_ARGS[@]}"
+          fi
+
+      - name: Clean up temporary keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/gfs-release.jks"
